@@ -188,34 +188,140 @@ configure_firewall_complete() {
     ufw --force reset >/dev/null 2>&1
     ufw default deny incoming >/dev/null 2>&1
     ufw default allow outgoing >/dev/null 2>&1
+    
+    # Basic rules first (from original guide)
     ufw allow 22 >/dev/null 2>&1
-    ufw allow 30303/tcp >/dev/null 2>&1
-    ufw allow 30303/udp >/dev/null 2>&1
+    ufw allow ssh >/dev/null 2>&1
+    ufw allow 30303/tcp >/dev/null 2>&1  # Geth P2P
+    ufw allow 30303/udp >/dev/null 2>&1  # Geth P2P
     
     echo ""
-    print_warning "Choose RPC access level:"
-    echo "1) Local only (safest)"
-    echo "2) Public access (risky but easy)"
+    print_warning "🔒 RPC ACCESS CONFIGURATION"
     echo ""
-    read -p "Choose (1-2): " choice
+    echo "1) 🏠 Local only - RPC accessible only from this server"
+    echo "   → Choose if Aztec runs on SAME server as RPC"
+    echo ""
+    echo "2) 🌍 Public access - RPC accessible from anywhere"
+    echo "   → Choose if Aztec runs on DIFFERENT server"
+    echo "   → You can secure it later with specific IPs"
+    echo ""
+    echo "3) 📝 IP Whitelist - RPC accessible only from specific IPs"
+    echo "   → Most secure for multi-server setup"
+    echo "   → You specify which IPs can access"
+    echo ""
+    read -p "Choose (1-3): " choice
     
     case $choice in
         1)
-            ufw allow from 127.0.0.1 to any port 8545 >/dev/null 2>&1
-            ufw allow from 127.0.0.1 to any port 3500 >/dev/null 2>&1
-            ufw deny 8545 >/dev/null 2>&1
-            ufw deny 3500 >/dev/null 2>&1
-            print_success "Local-only access configured"
+            print_info "Configuring local-only access..."
+            # Allow localhost (from original guide)
+            ufw allow from 127.0.0.1 to any port 8545 proto tcp >/dev/null 2>&1
+            ufw allow from 127.0.0.1 to any port 3500 proto tcp >/dev/null 2>&1
+            # Deny everyone else (from original guide)
+            ufw deny 8545/tcp >/dev/null 2>&1
+            ufw deny 3500/tcp >/dev/null 2>&1
+            
+            print_success "✅ Local-only access configured"
+            echo ""
+            print_info "📋 To allow other servers later:"
+            echo "sudo ufw allow from OTHER_SERVER_IP to any port 8545 proto tcp"
+            echo "sudo ufw allow from OTHER_SERVER_IP to any port 3500 proto tcp"
             ;;
+            
+        2)
+            print_info "Configuring public access..."
+            # Allow from anywhere (simple approach)
+            ufw allow 8545/tcp >/dev/null 2>&1
+            ufw allow 3500/tcp >/dev/null 2>&1
+            
+            print_warning "✅ Public access configured"
+            echo ""
+            PUBLIC_IP=$(curl -s --connect-timeout 5 ifconfig.me 2>/dev/null || echo "YOUR_IP")
+            print_warning "⚠️  Your RPC is accessible from anywhere:"
+            echo "   http://$PUBLIC_IP:8545 (Execution)"
+            echo "   http://$PUBLIC_IP:3500 (Consensus)"
+            echo ""
+            print_info "🔒 To secure it later (allow only specific IPs):"
+            echo "sudo ufw allow from 127.0.0.1 to any port 8545 proto tcp"
+            echo "sudo ufw allow from 127.0.0.1 to any port 3500 proto tcp"
+            echo "sudo ufw allow from AZTEC_VPS_IP to any port 8545 proto tcp"
+            echo "sudo ufw allow from AZTEC_VPS_IP to any port 3500 proto tcp"
+            echo "sudo ufw deny 8545/tcp"
+            echo "sudo ufw deny 3500/tcp"
+            echo "sudo ufw reload"
+            ;;
+            
+        3)
+            print_info "🔐 Configuring IP whitelist..."
+            echo ""
+            
+            # Always allow localhost first (from original guide)
+            ufw allow from 127.0.0.1 to any port 8545 proto tcp >/dev/null 2>&1
+            ufw allow from 127.0.0.1 to any port 3500 proto tcp >/dev/null 2>&1
+            print_success "✅ Localhost access enabled"
+            
+            echo ""
+            print_info "Enter IP addresses to whitelist (one per line, empty line to finish):"
+            print_info "Example: If your Aztec VPS IP is 134.12.44.177, enter: 134.12.44.177"
+            echo ""
+            
+            ALLOWED_IPS=()
+            while true; do
+                read -p "IP address: " ip
+                if [ -z "$ip" ]; then break; fi
+                
+                # Validate IP format
+                if [[ $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+                    # Add allow rules (these must come BEFORE deny rules)
+                    ufw allow from $ip to any port 8545 proto tcp comment "RPC from $ip" >/dev/null 2>&1
+                    ufw allow from $ip to any port 3500 proto tcp comment "Beacon from $ip" >/dev/null 2>&1
+                    ALLOWED_IPS+=($ip)
+                    print_success "✅ Added $ip to whitelist"
+                else
+                    print_error "❌ Invalid IP format: $ip (use format: 1.2.3.4)"
+                fi
+            done
+            
+            if [ ${#ALLOWED_IPS[@]} -gt 0 ]; then
+                # CRITICAL: Deny rules must come AFTER allow rules (from original guide)
+                ufw deny 8545/tcp >/dev/null 2>&1
+                ufw deny 3500/tcp >/dev/null 2>&1
+                
+                print_success "✅ IP whitelist configured"
+                echo ""
+                print_info "📋 Summary:"
+                echo "   ✅ Localhost: 127.0.0.1"
+                echo "   ✅ Allowed IPs: ${ALLOWED_IPS[*]}"
+                echo "   🚫 All other IPs: BLOCKED"
+                echo ""
+                print_info "💡 Rule order (allow rules before deny rules):"
+                echo "   1. Allow localhost"
+                echo "   2. Allow specific IPs"
+                echo "   3. Deny everyone else"
+            else
+                print_warning "No IPs added, defaulting to localhost-only"
+                ufw deny 8545/tcp >/dev/null 2>&1
+                ufw deny 3500/tcp >/dev/null 2>&1
+            fi
+            ;;
+            
         *)
-            ufw allow 8545 >/dev/null 2>&1
-            ufw allow 3500 >/dev/null 2>&1
-            print_warning "Public access configured - be careful!"
+            print_error "Invalid choice, defaulting to local-only (safest)"
+            ufw allow from 127.0.0.1 to any port 8545 proto tcp >/dev/null 2>&1
+            ufw allow from 127.0.0.1 to any port 3500 proto tcp >/dev/null 2>&1
+            ufw deny 8545/tcp >/dev/null 2>&1
+            ufw deny 3500/tcp >/dev/null 2>&1
             ;;
     esac
     
+    # Enable firewall and reload (from original guide)
     ufw --force enable >/dev/null 2>&1
-    print_success "Firewall configured"
+    ufw reload >/dev/null 2>&1
+    
+    print_success "🛡️  Firewall configured and enabled"
+    echo ""
+    print_info "📋 View rules: sudo ufw status numbered"
+    print_info "🔧 Delete rule: sudo ufw delete [rule_number]"
 }
 
 install_node() {
